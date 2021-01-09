@@ -1,27 +1,54 @@
 import { WindowInfo } from './window-info';
-import { PLATFORM } from 'aurelia';
+import { DI, IPlatform, PLATFORM } from 'aurelia';
+import { join } from 'path';
+import { deepExtend } from './deep-extend';
 
-export class Configuration<T extends Record<string, unknown> | { new(): T }> {
+type Environments = Record<string, string[]> | null;
+type ConfigurationRecord<T = Record<string, unknown>> = Record<string, unknown> | { new(): T };
+export interface IConfiguration<T extends ConfigurationRecord<T> = ConfigurationRecord> {
+    getDictValue<K extends keyof T>(baseObject: T, key: K | string): unknown;
+    set(key: string, val: string): void;
+    setAll(obj: T): void;
+    loadConfig(): Promise<void>;
+    check(): boolean;
+    is(environment: string): boolean;
+    lazyMerge(obj: T): void
+    setBasePathMode(bool: boolean | undefined | null);
+    readonly configObject: T;
+    readonly configMergeObject: T;
+    cascadeMode: boolean;
+    directory: string;
+    environment: string;
+    configFile: string;
+    environments: Environments;
+    readonly environmentEnabled: boolean;
+    get: (key: string, defaultValue?: unknown) => unknown;
+}
+
+export const IConfiguration = DI.createInterface<IConfiguration>('IConfiguration', x => x.singleton(Configuration));
+
+export class Configuration<T extends ConfigurationRecord<T> = ConfigurationRecord> implements IConfiguration<T> {
     #environment = 'default';
-    #environments: string[] | null = null;
+    #environments: Environments = null;
     #directory = 'config';
     #configFile = 'config.json';
     #cascadeMode = true;
-    #bachPathMode = false;
-    #window: WindowInfo;
+    #basePathMode = false;
+    #windowInfo: WindowInfo;
 
-    #configObject = {} as T;
-    #configMergeObject = {} as T;
+    #configObject: T = {} as T;
+    private _configMergeObject: T = {} as T;
 
-    constructor() {
+    constructor(platform: IPlatform = PLATFORM) {
         // Setup the window object with the current browser window information
-        this.#window = new WindowInfo();
-        this.#window.hostName = PLATFORM.location.hostname;
-        this.#window.port = PLATFORM.location.port;
+        this.#windowInfo = {
+            hostName: platform.location.hostname,
+            port: platform.location.port,
+        } as WindowInfo;
 
         // Only sets the pathname when its not '' or '/'
-        if (PLATFORM.location.pathname && PLATFORM.location.pathname.length > 1) {
-            this.#window.pathName = PLATFORM.location.pathname;
+        if (platform.location.pathname && platform.location.pathname.length > 1) {
+            this.#windowInfo.pathName = platform.location.pathname;
         }
     }
 
@@ -38,6 +65,18 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
     }
 
     /**
+   * Get Directory
+   *
+   * Gets the location to look for the config file
+   *
+   * @param path
+   */
+    public get directory(): string {
+        return this.#directory;
+    }
+
+
+    /**
      * Set Config
      *
      * Sets the filename to look for in the defined directory
@@ -46,6 +85,17 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      */
     public set configFile(value: string) {
         this.#configFile = value;
+    }
+
+    /**
+     * Get Config
+     *
+     * Get the config file name
+     *
+     * @returns {string}
+     */
+    public get configFile(): string {
+        return this.#configFile;
     }
 
     /**
@@ -60,6 +110,17 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
     }
 
     /**
+     * Get Environment
+     *
+     * Gets the environment value
+     *
+     * @param environment
+     */
+    public get environment(): string {
+        return this.#environment;
+    }
+
+    /**
      * Set Environments
      *
      * Specify multiple environment domains to allow for
@@ -67,13 +128,24 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      * @param environments
      */
-    public set environments(environments: string[]) {
+    public set environments(environments: Environments) {
         if (environments !== null) {
             this.#environments = environments;
 
             // Check the hostname value and determine our environment
             this.check();
         }
+    }
+
+    /**
+     * Get Environments
+     *
+     * Gets multiple environment domains
+     *
+     * @param environments
+     */
+    public get environments(): Environments {
+        return this.#environments;
     }
 
     /**
@@ -90,15 +162,8 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
         this.#cascadeMode = bool ?? true;
     }
 
-    /**
-     * Used to override default window information during contruction.
-     * Should only be used during unit testing, no need to set it up in normal
-     * operation
-     *
-     * @param bool
-     */
-    public set window(window: WindowInfo) {
-        this.#window = window;
+    public get cascadeMode(): boolean {
+        return this.#cascadeMode;
     }
 
     /**
@@ -112,29 +177,28 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      * @param bool
      */
-    public set basePathMode(bool: boolean | undefined | null) {
-        this.#bachPathMode = !!bool;
+    public setBasePathMode(bool: boolean | undefined | null): void {
+        this.#basePathMode = !!bool;
     }
 
     /**
      * Get Config
      * Returns the entire configuration object pulled and parsed from file
      *
-     * @returns {V}
+     * @returns {T}
      */
-    get obj(): V {
+    get configObject(): T {
         return this.#configObject;
     }
 
     /**
-     * Get Config
+     * Get Merge Config
+     * Returns the entire configuration object pulled and parsed from file
      *
-     * Get the config file name
-     *
-     * @returns {V}
+     * @returns {T}
      */
-    get config(): V {
-        return this.#configFile;
+    get configMergeObject(): T {
+        return this._configMergeObject;
     }
 
     /**
@@ -157,14 +221,14 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      */
     public check(): boolean {
-        let hostname = this.#window.hostName;
+        let hostname = this.#windowInfo.hostName;
 
-        if (this.#window.port != '') {
-            hostname += ':' + this.#window.port;
+        if (this.#windowInfo.port != '') {
+            hostname += ':' + this.#windowInfo.port;
         }
 
-        if (this.#bachPathMode) {
-            hostname += this.#window.pathName;
+        if (this.#basePathMode) {
+            hostname += this.#windowInfo.pathName;
         }
 
         // Check we have environments we can loop
@@ -212,7 +276,7 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      * @returns {boolean}
      */
     public get environmentExists(): boolean {
-        return this.#environment in this.obj;
+        return this.#environment in this.configObject;
     }
 
     /**
@@ -248,7 +312,7 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      * @param defaultValue
      * @returns {*}
      */
-    get(key: string, defaultValue: any = null): any {
+    public get(key: string, defaultValue: unknown = null): unknown {
         // By default return the default value
         let returnVal = defaultValue;
 
@@ -256,16 +320,16 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
         if (key.indexOf('.') === -1) {
             // Using default environment
             if (!this.environmentEnabled) {
-                return this.obj[key] ? this.obj[key] : defaultValue;
+                return this.configObject[key] ? this.configObject[key] : defaultValue;
             }
 
             if (this.environmentEnabled) {
                 // Value exists in environment
-                if (this.environmentExists && this.obj[this.#environment][key]) {
-                    returnVal = this.obj[this.#environment][key];
+                if (this.environmentExists && this.configObject[this.#environment][key]) {
+                    returnVal = this.configObject[this.#environment][key];
                     // Get default value from non-namespaced section if enabled
-                } else if (this.#cascadeMode && this.obj[key]) {
-                    returnVal = this.obj[key];
+                } else if (this.#cascadeMode && this.configObject[key]) {
+                    returnVal = this.configObject[key];
                 }
 
                 return returnVal;
@@ -275,12 +339,12 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
             if (this.environmentEnabled) {
                 if (this.environmentExists) {
                     try {
-                        return this.getDictValue(this.obj[this.#environment], key);
+                        return this.getDictValue(this.configObject[this.#environment], key);
                     } catch {
                         // nested key, env exists, key is not in environment
                         if (this.#cascadeMode) {
                             try {
-                                return this.getDictValue(this.obj, key);
+                                return this.getDictValue(this.configObject, key);
                                 // eslint-disable-next-line no-empty
                             } catch { }
                         }
@@ -288,7 +352,7 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
                 }
             } else {
                 try {
-                    return this.getDictValue(this.obj, key);
+                    return this.getDictValue(this.configObject, key);
                     // eslint-disable-next-line no-empty
                 } catch { }
             }
@@ -304,19 +368,18 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      * @param key
      * @param val
      */
-    public set(key: string, val: string) {
+    public set(key: string, val: string): void {
         if (key.indexOf('.') === -1) {
-            this.obj[key] = val;
+            this.configObject[key] = val;
         } else {
             const splitKey = key.split('.');
             const parent = splitKey[0];
             const child = splitKey[1];
 
-            if (this.obj[parent] === undefined) {
-                this.obj[parent] = {};
+            if (this.configObject[parent] === undefined) {
+                this.configObject[parent] = {};
             }
-
-            this.obj[parent][child] = val;
+            this.configObject[parent][child] = val;
         }
     }
 
@@ -330,9 +393,8 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      * @param obj
      *
      */
-    merge(obj: T) {
+    public merge(obj: T): void {
         const currentConfig = this.#configObject;
-
         this.#configObject = deepExtend(currentConfig, obj);
     }
 
@@ -347,10 +409,9 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      * @param obj
      *
      */
-    lazyMerge(obj: T) {
-        const currentMergeConfig = this.#configMergeObject || {};
-
-        this.#configMergeObject = deepExtend(currentMergeConfig, obj);
+    public lazyMerge(obj: T): void {
+        const currentMergeConfig = this._configMergeObject || {};
+        this._configMergeObject = deepExtend(currentMergeConfig, obj);
     }
 
     /**
@@ -361,7 +422,7 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      * @param T
      */
-    setAll(obj: T) {
+    public setAll(obj: T): void {
         this.#configObject = obj;
     }
 
@@ -371,8 +432,8 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      * @returns {T}
      */
-    getAll(): T {
-        return this.obj;
+    public getAll(): T {
+        return this.configObject;
     }
 
     /**
@@ -382,15 +443,13 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      * @returns {Promise}
      */
-    loadConfig(): Promise<any> {
-        return this.loadConfigFile(join(this.directory, this.config), (data: string) =>
-            this.setAll(data),
-        ).then(() => {
-            if (this.#configMergeObject) {
-                this.merge(this.#configMergeObject);
-                this.#configMergeObject = null;
-            }
-        });
+    public async loadConfig(): Promise<void> {
+        const data = await this.loadConfigFile(join(this.directory, this.configFile));
+        this.setAll(data);
+        if (this._configMergeObject) {
+            this.merge(this._configMergeObject);
+            this._configMergeObject = null;
+        }
     }
 
     /**
@@ -400,7 +459,7 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      *
      * @returns {Promise}
      */
-    loadConfigFile(path: string): Promise<unknown> {
+    public loadConfigFile(path: string): Promise<T> {
         return new Promise((resolve, reject) => {
             const pathClosure = path.toString();
 
@@ -413,7 +472,6 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
             xhr.onreadystatechange = function () {
                 if (xhr.readyState == 4 && xhr.status == 200) {
                     const data = JSON.parse(this.responseText);
-                    action(data);
                     resolve(data);
                 }
             };
@@ -443,16 +501,16 @@ export class Configuration<T extends Record<string, unknown> | { new(): T }> {
      * @param optional  When true, errors encountered while loading the config file will be ignored.
      *
      */
-    async mergeConfigFile(path: string, optional: boolean): Promise<void> {
+    public async mergeConfigFile(path: string, optional: boolean): Promise<void> {
         try {
             const data = await this.loadConfigFile(path);
             this.lazyMerge(data);
         }
-        catch {
+        catch (e) {
             if (optional === true) {
-                resolve();
+                return
             } else {
-                reject(error);
+                throw e
             }
         }
     }

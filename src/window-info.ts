@@ -1,5 +1,5 @@
-export class WindowInfo {
-    public hostName: string;
-    public port: string;
-    public pathName: string;
+export interface WindowInfo {
+    hostName: string;
+    port: string;
+    pathName?: string;
 }

@@ -28,7 +28,7 @@ module.exports = function(env, { analyze }) {
   return {
     mode: production ? 'production' : 'development',
     devtool: production ? 'source-map' : 'inline-source-map',
-    entry: './src/main.ts',
+    entry: './src/index.ts',
     output: {
       path: path.resolve(__dirname, 'dist'),
       filename: 'entry-bundle.js'

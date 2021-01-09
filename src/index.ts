@@ -1,38 +1,16 @@
-import { DI, IContainer, IRegistry } from "aurelia";
+import { Configuration, IConfiguration } from './aurelia-configuration';
+import { IContainer, IRegistry } from "aurelia";
 
-
-export type IConfiguration{
-
-}
-
-export const ipr = DI.createInterface<IConfiguration>('IConfiguration');
 
 
 export class AureliaConfiguration implements IRegistry {
+    #config?: IConfiguration | Configuration;
     register(container: IContainer): void {
-
+        container.register(this.#config ?? IConfiguration);
     }
-
+    static config(config: IConfiguration | Configuration): AureliaConfiguration {
+        const instance = new AureliaConfiguration();
+        instance.#config = config;
+        return instance;
+    }
 }
-
-// export function configure(
-//     aurelia: FrameworkConfiguration,
-//     configCallback?: (config: Configuration) => Promise<any>,
-// ) {
-//     let instance = aurelia.container.get(Configuration) as Configuration;
-//     let promise: Promise<any> | null = null;
-
-//     // Do we have a callback function?
-//     if (configCallback !== undefined && typeof configCallback === 'function') {
-//         promise = Promise.resolve(configCallback(instance));
-//     } else {
-//         promise = Promise.resolve();
-//     }
-
-//     // Don't load the config until the configCallback has completed.
-//     return promise.then(function () {
-//         return instance.loadConfig();
-//     });
-// }
-
-// export { Configuration };
